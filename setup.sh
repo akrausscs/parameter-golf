@@ -3,7 +3,7 @@
 # Run once on a fresh cloud instance. Safe to re-run (idempotent).
 #
 # Usage:
-#   bash setup.sh                  # 2 training shards (fast, ~3GB)
+#   bash setup.sh                  # 2 training shards (~3GB, fast)
 #   TRAIN_SHARDS=10 bash setup.sh  # more data for longer runs
 #   SKIP_DATA=1 bash setup.sh      # skip data download (already done)
 
