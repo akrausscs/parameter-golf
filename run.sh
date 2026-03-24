@@ -2,17 +2,20 @@
 # Parameter Golf — experiment runner
 #
 # Usage:
-#   bash run.sh baseline                         # standard training, full steps
-#   bash run.sh fomaml                           # FOMAML K=1, full steps
-#   bash run.sh baseline --iters 4000            # 20% steps (directional)
-#   bash run.sh fomaml --iters 4000 --k 1       # FOMAML K=1, 20% steps
-#   bash run.sh fomaml --iters 4000 --k 3 --inner-lr 0.005
-#   bash run.sh baseline --seed 42               # different seed
-#   bash run.sh fomaml --gpus 8                  # multi-GPU (8xH100)
+#   bash run.sh baseline                         # root train_gpt.py (getting started)
+#   bash run.sh frontier                         # current SOTA record
+#   bash run.sh late-ema                         # Late EMA fix only
+#   bash run.sh bos-reset                        # BOS-reset attention only
+#   bash run.sh combined                         # BOS-reset + Late EMA (both)
+#
+# Common flags:
+#   --iters 4000    directional probe (20% of full run — fast feedback)
+#   --seed 42       different seed
+#   --gpus 8        multi-GPU (8xH100 for leaderboard submissions)
+#   --wallclock 0   no time cap (full convergence)
 #
 # Results written to:
-#   logs/<run_id>.txt          full training log
-#   logs/<run_id>_summary.json one-line result summary
+#   logs/<run_id>.log          full training log
 
 set -euo pipefail
 
@@ -23,87 +26,91 @@ shift || true
 GPUS=1
 ITERATIONS=20000
 SEED=1337
-FOMAML_K=1
-FOMAML_INNER_LR=0.01
-WALLCLOCK=600.0   # 10 min — set to 0 for no cap
+WALLCLOCK=600.0   # 10 min — matches leaderboard cap; set to 0 to disable
 
 # ---- Parse args ----
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --gpus)       GPUS="$2";           shift 2 ;;
-        --iters)      ITERATIONS="$2";     shift 2 ;;
-        --seed)       SEED="$2";           shift 2 ;;
-        --k)          FOMAML_K="$2";       shift 2 ;;
-        --inner-lr)   FOMAML_INNER_LR="$2"; shift 2 ;;
-        --wallclock)  WALLCLOCK="$2";      shift 2 ;;
+        --gpus)      GPUS="$2";      shift 2 ;;
+        --iters)     ITERATIONS="$2"; shift 2 ;;
+        --seed)      SEED="$2";      shift 2 ;;
+        --wallclock) WALLCLOCK="$2"; shift 2 ;;
         *) echo "Unknown arg: $1"; exit 1 ;;
     esac
 done
 
-# ---- Build run ID ----
-TIMESTAMP=$(date +%m%d_%H%M)
-if [ "$MODE" = "fomaml" ]; then
-    RUN_ID="fomaml_k${FOMAML_K}_lr${FOMAML_INNER_LR}_i${ITERATIONS}_s${SEED}_${TIMESTAMP}"
-    K_VAL=$FOMAML_K
-else
-    RUN_ID="baseline_i${ITERATIONS}_s${SEED}_${TIMESTAMP}"
-    K_VAL=0
+# ---- Script selection ----
+RECORDS="records/track_10min_16mb"
+case "$MODE" in
+    baseline)
+        SCRIPT="train_gpt.py"
+        ;;
+    frontier)
+        SCRIPT="$RECORDS/2026-03-22_11L_EMA_GPTQ-lite_warmdown3500_QAT015_1.1233/train_gpt.py"
+        ;;
+    late-ema)
+        SCRIPT="$RECORDS/2026-03-25_11L_LateEMA_XSA-all_GPTQ/train_gpt.py"
+        ;;
+    bos-reset)
+        SCRIPT="$RECORDS/2026-03-25_11L_BOS-Reset_XSA-all_GPTQ/train_gpt.py"
+        ;;
+    combined)
+        SCRIPT="$RECORDS/2026-03-25_11L_BOS-Reset_LateEMA_XSA-all_GPTQ/train_gpt.py"
+        ;;
+    *)
+        echo "Unknown mode: $MODE"
+        echo "Valid modes: baseline, frontier, late-ema, bos-reset, combined"
+        exit 1
+        ;;
+esac
+
+if [ ! -f "$SCRIPT" ]; then
+    echo "Error: script not found: $SCRIPT"
+    exit 1
 fi
 
 # ---- Data paths ----
 DATA_PATH="${DATA_PATH:-./data/datasets/fineweb10B_sp1024}"
 TOKENIZER_PATH="${TOKENIZER_PATH:-./data/tokenizers/fineweb_1024_bpe.model}"
 
-# ---- Guard: check data exists ----
 if [ ! -d "$DATA_PATH" ]; then
     echo "Error: data not found at $DATA_PATH"
     echo "Run: bash setup.sh"
     exit 1
 fi
 
+# ---- Run ID ----
+TIMESTAMP=$(date +%m%d_%H%M)
+RUN_ID="${MODE}_i${ITERATIONS}_s${SEED}_${TIMESTAMP}"
+
+mkdir -p logs
+
 echo "========================================"
 echo "Mode:       $MODE"
+echo "Script:     $SCRIPT"
 echo "Run ID:     $RUN_ID"
 echo "Iterations: $ITERATIONS"
 echo "Seed:       $SEED"
 echo "GPUs:       $GPUS"
-if [ "$K_VAL" -gt 0 ]; then
-echo "FOMAML K:   $FOMAML_K"
-echo "Inner LR:   $FOMAML_INNER_LR"
-fi
+echo "Wallclock:  ${WALLCLOCK}s"
 echo "========================================"
 echo ""
-
-mkdir -p logs
 
 # ---- Launch ----
 RUN_ID=$RUN_ID \
 SEED=$SEED \
 ITERATIONS=$ITERATIONS \
 MAX_WALLCLOCK_SECONDS=$WALLCLOCK \
-FOMAML_K=$K_VAL \
-FOMAML_INNER_LR=$FOMAML_INNER_LR \
 DATA_PATH=$DATA_PATH \
 TOKENIZER_PATH=$TOKENIZER_PATH \
 VOCAB_SIZE=1024 \
 torchrun \
     --standalone \
     --nproc_per_node=$GPUS \
-    train_gpt.py
+    "$SCRIPT" \
+    2>&1 | tee "logs/${RUN_ID}.log"
 
-# ---- Print summary ----
-SUMMARY="logs/${RUN_ID}_summary.json"
-if [ -f "$SUMMARY" ]; then
-    echo ""
-    echo "========================================"
-    echo "Result:"
-    python3 -c "
-import json
-s = json.load(open('$SUMMARY'))
-print(f\"  BPB:      {s['val_bpb']:.6f}\")
-print(f\"  Steps:    {s['steps']}\")
-print(f\"  Artifact: {s['artifact_bytes'] / 1e6:.2f} MB\")
-print(f\"  Log:      logs/{s['run_id']}.txt\")
-"
-    echo "========================================"
-fi
+echo ""
+echo "Log saved to: logs/${RUN_ID}.log"
+echo "BPB line:"
+grep "final_int6_sliding_window_exact\|final_int8_zlib_roundtrip_exact" "logs/${RUN_ID}.log" | tail -1

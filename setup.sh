@@ -60,7 +60,15 @@ MAX_WALLCLOCK_SECONDS=0 \
 DATA_PATH=./data/datasets/fineweb10B_sp1024 \
 TOKENIZER_PATH=./data/tokenizers/fineweb_1024_bpe.model \
 VOCAB_SIZE=1024 \
-torchrun --standalone --nproc_per_node=1 train_gpt.py 2>&1 | tail -5
+torchrun --standalone --nproc_per_node=1 \
+    records/track_10min_16mb/2026-03-22_11L_EMA_GPTQ-lite_warmdown3500_QAT015_1.1233/train_gpt.py \
+    2>&1 | tail -5
 
 echo ""
-echo "Setup complete. Run experiments with: bash run.sh"
+echo "Setup complete."
+echo ""
+echo "Quick experiments:"
+echo "  bash run.sh bos-reset  --iters 4000   # directional probe (~10 min on 1xH100)"
+echo "  bash run.sh late-ema   --iters 20000  # full run (hits QAT phase)"
+echo "  bash run.sh combined   --iters 4000   # combined probe"
+echo "  bash run.sh combined   --gpus 8       # leaderboard submission run"
