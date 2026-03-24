@@ -977,7 +977,7 @@ def eval_val_sliding(
     token_count = torch.zeros((), device=device, dtype=torch.float64)
     byte_count = torch.zeros((), device=device, dtype=torch.float64)
     base_model.eval()
-    compiled_logits = torch.compile(base_model.forward_logits, dynamic=True)
+    compiled_logits = torch.compile(base_model.forward_logits, fullgraph=False)
     with torch.inference_mode():
         for bi in range(0, len(my_windows), batch_seqs):
             batch_ws = my_windows[bi:bi + batch_seqs]
@@ -1378,7 +1378,7 @@ def main() -> None:
     base_model.mlp_up_bank.data = base_model.mlp_up_bank.data.float()
     base_model.mlp_down_bank.data = base_model.mlp_down_bank.data.float()
     restore_low_dim_params_to_fp32(base_model)
-    compiled_model = torch.compile(base_model, dynamic=True)
+    compiled_model = torch.compile(base_model, fullgraph=False)
     # No DDP — Parallel Muon handles bank communication via reduce-scatter,
     # non-bank grads are manually all-reduced before Adam steps.
     model = compiled_model
@@ -1789,7 +1789,7 @@ def main() -> None:
             m.float()
     restore_low_dim_params_to_fp32(eval_model)
     eval_model.load_state_dict(deq_state, strict=True)
-    compiled_eval = torch.compile(eval_model, dynamic=True)
+    compiled_eval = torch.compile(eval_model, fullgraph=False)
     torch.cuda.synchronize()
     t_qeval = time.perf_counter()
     q_val_loss, q_val_bpb = eval_val(
