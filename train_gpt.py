@@ -1049,9 +1049,6 @@ def main() -> None:
             x, y = train_loader.next_batch(args.train_batch_tokens, args.train_seq_len, grad_accum_steps)
             if args.fomaml_k > 0:
                 loss = _fomaml_step(base_model, x, y, args.fomaml_k, args.fomaml_inner_lr)
-                for p in base_model.parameters():
-                    if p.grad is not None:
-                        p.grad.mul_(grad_scale)
             else:
                 if distributed:
                     model.require_backward_grad_sync = micro_step == grad_accum_steps - 1
@@ -1060,6 +1057,10 @@ def main() -> None:
                 (loss * grad_scale).backward()
             train_loss += loss
         train_loss /= grad_accum_steps
+        if args.fomaml_k > 0:
+            for p in base_model.parameters():
+                if p.grad is not None:
+                    p.grad.mul_(grad_scale)
         if args.fomaml_k > 0 and distributed:
             for p in base_model.parameters():
                 if p.grad is not None:
