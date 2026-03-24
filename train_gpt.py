@@ -86,6 +86,12 @@ class Hyperparameters:
     adam_eps = float(os.environ.get("ADAM_EPS", 1e-8))
     grad_clip_norm = float(os.environ.get("GRAD_CLIP_NORM", 0.0))
 
+    # FOMAML: set fomaml_k > 0 to enable. Splits each sequence into adapt/eval halves.
+    # Inner loop does fomaml_k SGD steps on the first half, meta-gradient computed on second half.
+    # fomaml_k=0 disables FOMAML and uses standard training.
+    fomaml_k = int(os.environ.get("FOMAML_K", 0))
+    fomaml_inner_lr = float(os.environ.get("FOMAML_INNER_LR", 0.01))
+
 # -----------------------------
 # MUON OPTIMIZER 
 # -----------------------------
@@ -169,7 +175,38 @@ class Muon(torch.optim.Optimizer):
 
 
 # -----------------------------
-# TOKENIZER-AGNOSTIC EVALUATION SETUP 
+# FOMAML
+# -----------------------------
+# First-Order MAML: train the model to be adaptable, not just accurate.
+# Splits each sequence into adapt (first half) and eval (second half).
+# Inner loop: K SGD steps on adapt tokens using copied params.
+# Outer loss: eval tokens with adapted params. Meta-gradients (no 2nd-order terms)
+# accumulate into model.param.grad so Muon/Adam update as normal.
+# Use base_model (unwrapped) to bypass DDP and torch.compile.
+
+def _fomaml_step(model: nn.Module, x: Tensor, y: Tensor, inner_k: int, inner_lr: float) -> Tensor:
+    from torch.func import functional_call
+    mid = x.shape[1] // 2
+    x_a, y_a = x[:, :mid], y[:, :mid]
+    x_e, y_e = x[:, mid:], y[:, mid:]
+    params = {k: p.detach().requires_grad_(True) for k, p in model.named_parameters()}
+    for _ in range(inner_k):
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            loss_a = functional_call(model, params, (x_a, y_a))
+        inner_grads = torch.autograd.grad(loss_a, list(params.values()))
+        params = {k: (p - inner_lr * g).detach().requires_grad_(True)
+                  for (k, p), g in zip(params.items(), inner_grads)}
+    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        loss_e = functional_call(model, params, (x_e, y_e))
+    meta_grads = torch.autograd.grad(loss_e, list(params.values()))
+    for p, mg in zip(model.parameters(), meta_grads):
+        g = mg.detach().to(dtype=p.dtype)
+        p.grad = g if p.grad is None else p.grad.add_(g)
+    return loss_e.detach()
+
+
+# -----------------------------
+# TOKENIZER-AGNOSTIC EVALUATION SETUP
 # -----------------------------
 #
 # It's common for small models have a large fraction of their parameters be embeddings, since the 2 * d_model * d_vocab vectors can be gigantic.
@@ -1009,14 +1046,25 @@ def main() -> None:
         zero_grad_all()
         train_loss = torch.zeros((), device=device)
         for micro_step in range(grad_accum_steps):
-            if distributed:
-                model.require_backward_grad_sync = micro_step == grad_accum_steps - 1
             x, y = train_loader.next_batch(args.train_batch_tokens, args.train_seq_len, grad_accum_steps)
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
-                loss = model(x, y)
-            train_loss += loss.detach()
-            (loss * grad_scale).backward()
+            if args.fomaml_k > 0:
+                loss = _fomaml_step(base_model, x, y, args.fomaml_k, args.fomaml_inner_lr)
+                for p in base_model.parameters():
+                    if p.grad is not None:
+                        p.grad.mul_(grad_scale)
+            else:
+                if distributed:
+                    model.require_backward_grad_sync = micro_step == grad_accum_steps - 1
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
+                    loss = model(x, y)
+                (loss * grad_scale).backward()
+            train_loss += loss
         train_loss /= grad_accum_steps
+        if args.fomaml_k > 0 and distributed:
+            for p in base_model.parameters():
+                if p.grad is not None:
+                    dist.all_reduce(p.grad, op=dist.ReduceOp.SUM)
+                    p.grad.div_(world_size)
 
         frac = min(step / args.muon_momentum_warmup_steps, 1.0) if args.muon_momentum_warmup_steps > 0 else 1.0
         muon_momentum = (1 - frac) * args.muon_momentum_warmup_start + frac * args.muon_momentum
@@ -1117,6 +1165,20 @@ def main() -> None:
         f"eval_time:{1000.0 * (time.perf_counter() - t_qeval):.0f}ms"
     )
     log0(f"final_int8_zlib_roundtrip_exact val_loss:{q_val_loss:.8f} val_bpb:{q_val_bpb:.8f}")
+
+    if master_process:
+        import json
+        summary = {
+            "run_id": args.run_id, "seed": args.seed,
+            "val_bpb": round(q_val_bpb, 8), "val_loss": round(q_val_loss, 8),
+            "steps": step, "training_time_ms": round(training_time_ms),
+            "artifact_bytes": quant_file_bytes + len(code.encode("utf-8")),
+            "fomaml_k": args.fomaml_k, "fomaml_inner_lr": args.fomaml_inner_lr,
+            "num_layers": args.num_layers, "model_dim": args.model_dim,
+        }
+        with open(f"logs/{args.run_id}_summary.json", "w") as f:
+            json.dump(summary, f, indent=2)
+        log0(f"run_summary:{json.dumps(summary)}")
 
     if distributed:
         dist.destroy_process_group()
