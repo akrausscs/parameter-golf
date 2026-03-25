@@ -6,6 +6,7 @@
 #   bash run.sh frontier                         # current SOTA record
 #   bash run.sh late-ema                         # Late EMA fix only
 #   bash run.sh bos-reset                        # BOS-reset attention only
+#   bash run.sh bos-reset-slot                   # BOS-reset + SLOT TTT eval
 #   bash run.sh combined                         # BOS-reset + Late EMA (both)
 #
 # Common flags:
@@ -54,12 +55,15 @@ case "$MODE" in
     bos-reset)
         SCRIPT="$RECORDS/2026-03-25_11L_BOS-Reset_XSA-all_GPTQ/train_gpt.py"
         ;;
+    bos-reset-slot)
+        SCRIPT="$RECORDS/2026-03-25_11L_BOS-Reset_SLOT_XSA-all_GPTQ/train_gpt.py"
+        ;;
     combined)
         SCRIPT="$RECORDS/2026-03-25_11L_BOS-Reset_LateEMA_XSA-all_GPTQ/train_gpt.py"
         ;;
     *)
         echo "Unknown mode: $MODE"
-        echo "Valid modes: baseline, frontier, late-ema, bos-reset, combined"
+        echo "Valid modes: baseline, frontier, late-ema, bos-reset, bos-reset-slot, combined"
         exit 1
         ;;
 esac
@@ -113,4 +117,4 @@ torchrun \
 echo ""
 echo "Log saved to: logs/${RUN_ID}.log"
 echo "BPB line:"
-grep "final_int6_sliding_window_exact\|final_int8_zlib_roundtrip_exact" "logs/${RUN_ID}.log" | tail -1
+grep "final_slot_ttt_exact\|final_int6_sliding_window_exact\|final_int8_zlib_roundtrip_exact" "logs/${RUN_ID}.log" | tail -1
