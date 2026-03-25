@@ -58,12 +58,15 @@ case "$MODE" in
     bos-reset-slot)
         SCRIPT="$RECORDS/2026-03-25_11L_BOS-Reset_SLOT_XSA-all_GPTQ/train_gpt.py"
         ;;
+    bos-reset-slot-gluv)
+        SCRIPT="$RECORDS/2026-03-25_11L_BOS-Reset_SLOT_GLUV_XSA-all_GPTQ/train_gpt.py"
+        ;;
     combined)
         SCRIPT="$RECORDS/2026-03-25_11L_BOS-Reset_LateEMA_XSA-all_GPTQ/train_gpt.py"
         ;;
     *)
         echo "Unknown mode: $MODE"
-        echo "Valid modes: baseline, frontier, late-ema, bos-reset, bos-reset-slot, combined"
+        echo "Valid modes: baseline, frontier, late-ema, bos-reset, bos-reset-slot, bos-reset-slot-gluv, combined"
         exit 1
         ;;
 esac
