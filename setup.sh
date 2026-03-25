@@ -6,12 +6,14 @@
 #   bash setup.sh                  # 2 training shards (~3GB, fast)
 #   TRAIN_SHARDS=10 bash setup.sh  # more data for longer runs
 #   SKIP_DATA=1 bash setup.sh      # skip data download (already done)
+#   SKIP_SMOKE=1 bash setup.sh     # skip smoke test (saves ~1 min)
 
 set -euo pipefail
 
 REPO="akrausscs/parameter-golf"
-TRAIN_SHARDS="${TRAIN_SHARDS:-2}"
+TRAIN_SHARDS="${TRAIN_SHARDS:-10}"
 SKIP_DATA="${SKIP_DATA:-0}"
+SKIP_SMOKE="${SKIP_SMOKE:-0}"
 
 # ---- Detect workspace ----
 if   [ -d /workspace ]; then WORKDIR=/workspace      # RunPod
@@ -51,6 +53,9 @@ echo ""
 python3 -c "import torch; print(f'PyTorch {torch.__version__}, CUDA {torch.version.cuda}, BF16 supported: {torch.cuda.is_bf16_supported()}')"
 
 # ---- Smoke test (10 steps, no val) ----
+if [ "$SKIP_SMOKE" = "1" ]; then
+    echo "Skipping smoke test (SKIP_SMOKE=1)"
+else
 echo ""
 echo "Running smoke test (10 steps)..."
 RUN_ID=smoke \
@@ -63,6 +68,7 @@ VOCAB_SIZE=1024 \
 torchrun --standalone --nproc_per_node=1 \
     records/track_10min_16mb/2026-03-22_11L_EMA_GPTQ-lite_warmdown3500_QAT015_1.1233/train_gpt.py \
     2>&1 | tail -5
+fi
 
 echo ""
 echo "Setup complete."
