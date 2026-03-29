@@ -64,9 +64,12 @@ case "$MODE" in
     combined)
         SCRIPT="$RECORDS/2026-03-25_11L_BOS-Reset_LateEMA_XSA-all_GPTQ/train_gpt.py"
         ;;
+    performer-probe)
+        SCRIPT="$RECORDS/2026-03-29_11L_Performer_BOS-Reset_XSA-all_GPTQ/train_gpt.py"
+        ;;
     *)
         echo "Unknown mode: $MODE"
-        echo "Valid modes: baseline, frontier, late-ema, bos-reset, bos-reset-slot, bos-reset-slot-gluv, combined"
+        echo "Valid modes: baseline, frontier, late-ema, bos-reset, bos-reset-slot, bos-reset-slot-gluv, combined, performer-probe"
         exit 1
         ;;
 esac
