@@ -560,6 +560,7 @@ def apply_rotary_emb(x: Tensor, cos: Tensor, sin: Tensor, rope_dims: int = 0) ->
     half = x.size(-1) // 2
     x1, x2 = x[..., :half], x[..., half:]
     return torch.cat((x1 * cos + x2 * sin, x1 * (-sin) + x2 * cos), dim=-1)
+@torch.compiler.disable
 def causal_linear_attention(phi_q: Tensor, phi_k: Tensor, v: Tensor, chunk_size: int = 128) -> Tensor:
     """Chunked sequential causal linear attention.
     Maintains running state S=[B,H,r,D] in memory — never materializes full [B,T,H,r,D].
