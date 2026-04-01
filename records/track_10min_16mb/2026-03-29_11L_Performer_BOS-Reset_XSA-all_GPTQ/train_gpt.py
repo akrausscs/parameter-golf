@@ -609,8 +609,9 @@ class CausalSelfAttention(nn.Module):
         self.rope_dims = 0  # set by GPT.__init__ for partial RoPE
         self.rotary = Rotary(self.head_dim, base=rope_base, train_seq_len=1024)
         self.use_xsa = False  # set by GPT.__init__ for deep layers only
-        if args.linear_attn_enabled:
-            r = args.linear_attn_features
+        self._linear_attn_enabled = bool(int(os.environ.get("LINEAR_ATTN_ENABLED", "0")))
+        if self._linear_attn_enabled:
+            r = int(os.environ.get("LINEAR_ATTN_FEATURES", "64"))
             omega = torch.empty(self.head_dim, r)
             nn.init.orthogonal_(omega)
             self.register_buffer('_performer_omega', omega, persistent=False)
@@ -647,7 +648,7 @@ class CausalSelfAttention(nn.Module):
         q = apply_rotary_emb(q, cos, sin, self.rope_dims)
         k = apply_rotary_emb(k, cos, sin, self.rope_dims)
         q = q * self.q_gain.to(dtype=q.dtype)[None, None, :, None]
-        if args.linear_attn_enabled:
+        if self._linear_attn_enabled:
             # Performer-style linear attention: O(T·r·D) instead of O(T²·D)
             # BOS-reset (varlen) skipped — linear attn is already causal per token
             phi_q = self._performer_phi(q)   # [B, T, H, r]
