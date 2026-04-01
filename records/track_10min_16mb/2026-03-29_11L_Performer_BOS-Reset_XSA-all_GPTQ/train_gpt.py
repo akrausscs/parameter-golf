@@ -668,9 +668,12 @@ class CausalSelfAttention(nn.Module):
         if self._linear_attn_enabled:
             # Performer-style linear attention: O(T·r·D) instead of O(T²·D)
             # BOS-reset (varlen) skipped — linear attn is already causal per token
+            # Gradient checkpointing: recompute intermediates during backward instead of
+            # storing all chunk tensors across all 11 layers (~142GB without checkpointing)
             phi_q = self._performer_phi(q)   # [B, T, H, r]
             phi_k = self._performer_phi(k)   # [B, T, Hkv, r]
-            y = causal_linear_attention(phi_q, phi_k, v)
+            y = torch.utils.checkpoint.checkpoint(
+                causal_linear_attention, phi_q, phi_k, v, use_reentrant=False)
         elif cu_seqlens is not None:
             # Varlen attention: block cross-document attention at BOS boundaries
             q_flat = q.reshape(bsz * seqlen, self.num_heads, self.head_dim)
