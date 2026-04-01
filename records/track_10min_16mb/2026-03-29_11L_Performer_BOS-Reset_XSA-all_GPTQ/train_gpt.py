@@ -560,8 +560,10 @@ def apply_rotary_emb(x: Tensor, cos: Tensor, sin: Tensor, rope_dims: int = 0) ->
     half = x.size(-1) // 2
     x1, x2 = x[..., :half], x[..., half:]
     return torch.cat((x1 * cos + x2 * sin, x1 * (-sin) + x2 * cos), dim=-1)
-def causal_linear_attention(phi_q: Tensor, phi_k: Tensor, v: Tensor) -> Tensor:
-    """Performer-style causal linear attention via cumulative outer products.
+def causal_linear_attention(phi_q: Tensor, phi_k: Tensor, v: Tensor, chunk_size: int = 128) -> Tensor:
+    """Chunked sequential causal linear attention.
+    Maintains running state S=[B,H,r,D] in memory — never materializes full [B,T,H,r,D].
+    Memory: O(B*H*r*D + B*C*H*r*D) per layer instead of O(B*T*H*r*D).
     phi_q: [B, T, H, r]
     phi_k: [B, T, Hkv, r]
     v:     [B, T, Hkv, D]
@@ -569,15 +571,29 @@ def causal_linear_attention(phi_q: Tensor, phi_k: Tensor, v: Tensor) -> Tensor:
     """
     B, T, H, r = phi_q.shape
     Hkv = phi_k.shape[2]
+    D = v.shape[-1]
     g = H // Hkv
-    phi_k = phi_k.repeat_interleave(g, dim=2)   # [B, T, H, r]
-    v = v.repeat_interleave(g, dim=2)            # [B, T, H, D]
-    kv = torch.einsum('bthr,bthd->bthrd', phi_k, v)  # [B, T, H, r, D]
-    kv_cs = kv.cumsum(dim=1)                          # [B, T, H, r, D] — causal
-    num = torch.einsum('bthr,bthrd->bthd', phi_q, kv_cs)  # [B, T, H, D]
-    k_cs = phi_k.cumsum(dim=1)                        # [B, T, H, r]
-    den = (phi_q * k_cs).sum(-1, keepdim=True).clamp(min=1e-6)  # [B, T, H, 1]
-    return num / den
+    phi_k = phi_k.repeat_interleave(g, dim=2)  # [B, T, H, r]
+    v = v.repeat_interleave(g, dim=2)           # [B, T, H, D]
+    S = torch.zeros(B, H, r, D, device=phi_q.device, dtype=phi_q.dtype)  # running KV state
+    z = torch.zeros(B, H, r, device=phi_q.device, dtype=phi_q.dtype)     # running normalizer
+    out = torch.empty(B, T, H, D, device=phi_q.device, dtype=phi_q.dtype)
+    for c in range(0, T, chunk_size):
+        q  = phi_q[:, c:c+chunk_size]   # [B, C, H, r]
+        k  = phi_k[:, c:c+chunk_size]   # [B, C, H, r]
+        vc = v[:, c:c+chunk_size]        # [B, C, H, D]
+        # Within-chunk causal cumsum
+        kv_c   = torch.einsum('bchr,bchd->bchrd', k, vc)  # [B, C, H, r, D]
+        kv_c_cs = kv_c.cumsum(dim=1)                       # [B, C, H, r, D]
+        k_cs   = k.cumsum(dim=1)                           # [B, C, H, r]
+        # Cross-chunk (S) + within-chunk contributions
+        num = torch.einsum('bchr,bhrd->bchd', q, S) + torch.einsum('bchr,bchrd->bchd', q, kv_c_cs)
+        den = (torch.einsum('bchr,bhr->bch', q, z) + (q * k_cs).sum(-1)).clamp(min=1e-6)
+        out[:, c:c+chunk_size] = num / den.unsqueeze(-1)
+        # Advance state
+        S = S + kv_c.sum(dim=1)   # [B, H, r, D]
+        z = z + k.sum(dim=1)      # [B, H, r]
+    return out
 class CausalSelfAttention(nn.Module):
     def __init__(
         self,
