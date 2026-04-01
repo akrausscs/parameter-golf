@@ -2,21 +2,25 @@
 # Parameter Golf — experiment runner
 #
 # Usage:
-#   bash run.sh baseline                         # root train_gpt.py (getting started)
-#   bash run.sh frontier                         # current SOTA record
-#   bash run.sh late-ema                         # Late EMA fix only
-#   bash run.sh bos-reset                        # BOS-reset attention only
-#   bash run.sh bos-reset-slot                   # BOS-reset + SLOT TTT eval
-#   bash run.sh combined                         # BOS-reset + Late EMA (both)
+#   bash run.sh bos-reset                        # our current best
+#   bash run.sh performer-probe                  # Performer linear attention probe
+#   bash run.sh frontier                         # accepted SOTA (PR #1019)
+#
+# Run modes:
+#   (default)             4-GPU probe:  --gpus 4 --wallclock 300  → ~940 steps, 1 val reading, ~$1
+#   --gpus 4              full 4-GPU:   --gpus 4 --wallclock 600  → ~1880 steps, ~$2
+#   --gpus 8              submission:   --gpus 8 --wallclock 600  → ~5700 steps, ~$4
 #
 # Common flags:
-#   --iters 4000    directional probe (20% of full run — fast feedback)
-#   --seed 42       different seed
-#   --gpus 8        multi-GPU (8xH100 for leaderboard submissions)
-#   --wallclock 0   no time cap (full convergence)
+#   --gpus N        number of GPUs
+#   --wallclock N   wall clock cap in seconds (default 300 for probe, 600 for submit)
+#   --seed N        random seed (default 1337)
+#   --val N         val every N steps (auto-set based on wallclock)
+#
+# Env vars pass through to train script (e.g. LINEAR_ATTN_ENABLED=1)
 #
 # Results written to:
-#   logs/<run_id>.log          full training log
+#   logs/<run_id>.log
 
 set -euo pipefail
 
@@ -24,10 +28,11 @@ set -euo pipefail
 MODE="${1:-baseline}"
 shift || true
 
-GPUS=1
+GPUS=4
 ITERATIONS=20000
 SEED=1337
-WALLCLOCK=600.0   # 10 min — matches leaderboard cap; set to 0 to disable
+WALLCLOCK=300.0   # 5 min probe by default — cheap directional signal
+VAL_EVERY=""      # auto-set below if not specified
 
 # ---- Parse args ----
 while [[ $# -gt 0 ]]; do
@@ -36,9 +41,20 @@ while [[ $# -gt 0 ]]; do
         --iters)     ITERATIONS="$2"; shift 2 ;;
         --seed)      SEED="$2";      shift 2 ;;
         --wallclock) WALLCLOCK="$2"; shift 2 ;;
+        --val)       VAL_EVERY="$2"; shift 2 ;;
         *) echo "Unknown arg: $1"; exit 1 ;;
     esac
 done
+
+# ---- Auto-set val frequency based on wallclock ----
+# Goal: get 1-2 val readings per run without wasting time
+if [[ -z "$VAL_EVERY" ]]; then
+    if   (( $(echo "$WALLCLOCK <= 0" | bc -l) )); then VAL_EVERY=500
+    elif (( $(echo "$WALLCLOCK <= 300" | bc -l) )); then VAL_EVERY=250
+    elif (( $(echo "$WALLCLOCK <= 600" | bc -l) )); then VAL_EVERY=500
+    else VAL_EVERY=1000
+    fi
+fi
 
 # ---- Script selection ----
 RECORDS="records/track_10min_16mb"
@@ -99,10 +115,10 @@ echo "========================================"
 echo "Mode:       $MODE"
 echo "Script:     $SCRIPT"
 echo "Run ID:     $RUN_ID"
-echo "Iterations: $ITERATIONS"
 echo "Seed:       $SEED"
 echo "GPUs:       $GPUS"
 echo "Wallclock:  ${WALLCLOCK}s"
+echo "Val every:  ${VAL_EVERY} steps"
 echo "========================================"
 echo ""
 
@@ -111,6 +127,7 @@ RUN_ID=$RUN_ID \
 SEED=$SEED \
 ITERATIONS=$ITERATIONS \
 MAX_WALLCLOCK_SECONDS=$WALLCLOCK \
+VAL_LOSS_EVERY=$VAL_EVERY \
 DATA_PATH=$DATA_PATH \
 TOKENIZER_PATH=$TOKENIZER_PATH \
 VOCAB_SIZE=1024 \
